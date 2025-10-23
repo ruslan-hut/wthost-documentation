@@ -2,7 +2,7 @@
 
 ## Overview
 - Base path: http://<bind_ip>:<port>/api/v1
-- Authentication: Bearer token in Authorization header for all endpoints except /check/{pin}
+- Authentication: Bearer token in the Authorization header for all endpoints except /check/{pin}
 - Protocols: REST (JSON over HTTP) and WebSocket
 - Response envelope:
 ```json
@@ -15,20 +15,20 @@
 ```
 
 ## Authentication
-- All main endpoints under /api/v1 require Authorization: Bearer <token> except /check/{pin}.
-- Token types (entity/token.go):
+- All main endpoints under `/api/v1` require Authorization: Bearer <token> except `/check/{pin}`.
+- Token types:
   - device — format: <token>:<deviceId>, used by a device to authenticate itself. The deviceId part identifies the device.
   - user — format: <token>:<deviceId>, issued after PIN validation to allow a user/client app to act on behalf of that device.
-- Validation flow (impl/core/core.go):
+- Validation flow:
   - Middleware extracts the Bearer token; Core.AuthenticateByToken verifies it (via DB when enabled).
   - For device token (type=device): deviceId parsed from the token is authorized/registered (created if missing).
   - For user token (type=user): deviceId is read from the token record; last_seen is updated.
 
 ## Linking Flow (PIN → user token)
-1) A device requests a PIN by sending a WebSocket message with command "pin_request".
+1) A device requests a PIN by sending a WebSocket message with the command `pin_request`.
 2) Core generates a PIN and stores it (Mongo required for persistence).
-3) The client app performs GET /api/v1/check/{pin} (no auth).
-4) On success, the service returns a user bearer token in the form <token>:<deviceId>.
+3) The client app performs GET `/api/v1/check/{pin}` (no auth).
+4) On success, the service returns a user bearer token in the form `<token>:<deviceId>`.
 5) The client then uses this Bearer token for authenticated REST calls.
 
 ## REST API
@@ -37,48 +37,80 @@ Headers: All authenticated requests must include Authorization: Bearer <token>
 
 1) GET `/device/{filter}`
 - Purpose: Fetch device data for the specified device id (filter acts as device id).
-- Response: { success, data, status_message, timestamp }
-- Example:
-```bash
-curl -H "Authorization: Bearer <token>" \
-     http://127.0.0.1:9700/api/v1/device/123456
+- Response: 
+```json
+{
+    "data": {
+        "id": "9b00f4f****990a75c7f",
+        "name": "",
+        "description": "",
+        "bank_clid": "38***12",
+        "registered": "2025-04-04T10:15:24.411Z",
+        "last_seen": "2025-10-23T11:36:27.757Z"
+    },
+    "success": true,
+    "status_message": "Success",
+    "timestamp": "2025-10-23T12:43:05Z"
+}
 ```
 
 2) POST `/op`
 - Purpose: Initiate a payment-related operation for the authenticated device.
-- Request (application/json):
+- Request:
 ```json
 {
   "type": "pay",
-  "data": "15000",
-  "transaction_id": "<required for refund>",
-  "description": "<optional description>"
+  "data": "5895",
+  "description": "Оплата замовлення №2875"
+}
+```
+```json
+{
+    "type": "refund",
+    "data": "5895",
+    "transaction_id": "TEST001122334455",
+    "description": "Refund operation"
 }
 ```
 - Notes:
   - `type` must be one of: `pay`, `refund`
   - `data` is required and is sent to the device as-is, it contains a payment value in cents
   - For refund, `transaction_id` must be provided
-- Success response data: operation id (string)
-- Example:
-```bash
-curl -X POST http://127.0.0.1:9700/api/v1/op \
-     -H "Authorization: Bearer <token>" \
-     -H "Content-Type: application/json" \
-     -d '{
-           "type": "pay",
-           "data": "{\"amount\":1000,\"currency\":\"USD\"}",
-           "description": "Online order #42"
-         }'
+- Success response example: 
+```json
+{
+    "data": "3Km97ftoG9",
+    "success": true,
+    "status_message": "Success",
+    "timestamp": "2025-10-23T12:28:55Z"
+}
 ```
+On success, the response contains an operation id (3Km97ftoG9 in the example).
 
 3) GET `/op/{id}`
 - Purpose: Read operation details back for the authenticated device.
 - Response: Operation object with sensitive fields hidden.
-- Example:
-```bash
-curl -H "Authorization: Bearer <token>" \
-     http://127.0.0.1:9700/api/v1/op/<operationId>
+- Example of a failed refund operation:
+```json
+{
+    "data": {
+        "id": "3Km97ftoG9",
+        "type": "refund",
+        "data": "5895",
+        "transaction_id": "TEST001122334455",
+        "rid": "",
+        "pay": [],
+        "description": "Refund operation",
+        "device_id": "9b00f4f****990a75c7f",
+        "created": "2025-10-23T11:38:10.677Z",
+        "closed": "2025-10-23T11:38:20.639Z",
+        "message": "Unable to process payment",
+        "status": "failed"
+    },
+    "success": true,
+    "status_message": "Success",
+    "timestamp": "2025-10-23T12:38:01Z"
+}
 ```
 
 4) POST `/secrets`
@@ -86,26 +118,14 @@ curl -H "Authorization: Bearer <token>" \
 - Request (application/json):
 ```json
 {
-  "bank_clid": "...",
-  "bank_secret": "...",
-  "bank_token": "..."
+  "bank_clid": "38***12",
+  "bank_secret": "AEI****z2WV",
+  "bank_token": "23512*****0553591"
 }
-```
-- Example:
-```bash
-curl -X POST http://127.0.0.1:9700/api/v1/secrets \
-     -H "Authorization: Bearer <token>" \
-     -H "Content-Type: application/json" \
-     -d '{"bank_clid":"demo","bank_secret":"demo","bank_token":"demo"}'
 ```
 
 5) GET `/check/{pin}`
 - Auth: none. Verifies a PIN issued for device linking and returns a user token on success.
-- Example:
-```bash
-curl http://127.0.0.1:9700/api/v1/check/123456
-# Response data: "<token>:<deviceId>"
-```
 
 ## WebSocket API
 - URL: `ws://<bind_ip>:<port>/api/v1/ws`
